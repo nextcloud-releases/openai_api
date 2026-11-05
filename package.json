@@ -30,7 +30,7 @@
 		"@nextcloud/logger": "^3.0.2",
 		"@nextcloud/password-confirmation": "^6.0.2",
 		"@nextcloud/router": "^3.0.1",
-		"@nextcloud/vue": "^9.5.0",
+		"@nextcloud/vue": "^9.14.1",
 		"vue": "^3.5.16"
 	},
 	"devDependencies": {
