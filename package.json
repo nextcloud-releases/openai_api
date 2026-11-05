@@ -1,27 +1,23 @@
 {
 	"name": "openai_api",
 	"version": "1.0.0",
+	"private": true,
 	"description": "OpenAI-compatible API for Nextcloud",
-	"type": "module",
 	"license": "AGPL-3.0-or-later",
 	"author": "Nextcloud GmbH and Nextcloud contributors",
-	"private": true,
+	"type": "module",
 	"scripts": {
 		"build": "NODE_ENV=production vite --mode production build",
 		"dev": "NODE_ENV=development vite --mode development build",
-		"watch": "NODE_ENV=development vite --mode development build --watch",
 		"lint": "eslint .",
 		"lint:fix": "eslint . --fix",
 		"stylelint": "stylelint 'src/**/*.{css,scss,vue}'",
-		"stylelint:fix": "stylelint 'src/**/*.{css,scss,vue}' --fix"
+		"stylelint:fix": "stylelint 'src/**/*.{css,scss,vue}' --fix",
+		"watch": "NODE_ENV=development vite --mode development build --watch"
 	},
 	"browserslist": [
 		"extends @nextcloud/browserslist-config"
 	],
-	"engines": {
-		"node": "^24.0.0",
-		"npm": "^11.3.0"
-	},
 	"dependencies": {
 		"@nextcloud/axios": "^2.5.1",
 		"@nextcloud/dialogs": "^7.3.0",
@@ -42,5 +38,9 @@
 		"sass": "^1.83.0",
 		"stylelint": "^17.15.0",
 		"typescript": "^5.7.0"
+	},
+	"engines": {
+		"node": "^24.0.0",
+		"npm": "^11.3.0"
 	}
 }
