@@ -24,6 +24,9 @@
 	<extraFiles>
 		<directory name="vendor" />
 	</extraFiles>
+	<stubs>
+		<file name="tests/stubs/oca_files_trashbin.php" />
+	</stubs>
 	<issueHandlers>
 		<LessSpecificReturnStatement errorLevel="error"/>
 		<LessSpecificReturnType errorLevel="error"/>

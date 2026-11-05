@@ -85,4 +85,15 @@ class Config {
 			ConfigLexicon::MAX_ATTACHMENT_SIZE_DEFAULT,
 		));
 	}
+
+	/**
+	 * Maximum number of inline attachments of one request.
+	 */
+	public function getMaxAttachments(): int {
+		return max(1, $this->appConfig->getValueInt(
+			Application::APP_ID,
+			ConfigLexicon::MAX_ATTACHMENTS,
+			ConfigLexicon::MAX_ATTACHMENTS_DEFAULT,
+		));
+	}
 }

@@ -11,6 +11,7 @@ namespace OCA\OpenAiApi\Settings;
 
 use OCA\OpenAiApi\AppInfo\Application;
 use OCA\OpenAiApi\ConfigLexicon;
+use OCA\OpenAiApi\Service\ConcurrencyLimiter;
 use OCA\OpenAiApi\Service\Config;
 use OCA\OpenAiApi\Service\ModelService;
 use OCA\OpenAiApi\Service\TaskRunner;
@@ -26,6 +27,7 @@ class Admin implements IDelegatedSettings {
 		private Config $config,
 		private ModelService $modelService,
 		private TaskRunner $taskRunner,
+		private ConcurrencyLimiter $concurrencyLimiter,
 		private IURLGenerator $urlGenerator,
 		private IL10N $l,
 		private IInitialState $initialState,
@@ -37,6 +39,10 @@ class Admin implements IDelegatedSettings {
 		$this->initialState->provideInitialState('realStreaming', $this->config->isRealStreamingEnabled());
 		$this->initialState->provideInitialState('baseUrl', $this->getBaseUrl());
 		$this->initialState->provideInitialState('needsWorker', $this->needsWorker());
+		$this->initialState->provideInitialState('concurrencyLimit', [
+			'status' => $this->concurrencyLimiter->getStatus(),
+			'limit' => $this->config->getMaxConcurrentRequests(),
+		]);
 
 		Util::addScript(Application::APP_ID, Application::APP_ID . '-settings-admin');
 		return new TemplateResponse(Application::APP_ID, 'settings-admin', [], '');

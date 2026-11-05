@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace OCA\OpenAiApi\Tests\unit\Service;
 
+use OCA\Files_Trashbin\Trash\ITrashManager;
 use OCA\OpenAiApi\AppInfo\Application;
 use OCA\OpenAiApi\Exception\ApiException;
 use OCA\OpenAiApi\Service\Attachment;
@@ -25,6 +26,7 @@ use OCP\Files\NotFoundException;
 use OCP\IUser;
 use OCP\Security\ISecureRandom;
 use PHPUnit\Framework\MockObject\MockObject;
+use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 use Test\TestCase;
 
@@ -34,6 +36,7 @@ class FileStagingServiceTest extends TestCase {
 	private IRootFolder&MockObject $rootFolder;
 	private Config&MockObject $config;
 	private IUserFolder&MockObject $userFolder;
+	private ContainerInterface&MockObject $container;
 	private FileStagingService $fileStagingService;
 
 	protected function setUp(): void {
@@ -42,6 +45,7 @@ class FileStagingServiceTest extends TestCase {
 		$this->config = $this->createMock(Config::class);
 		$this->config->method('getMaxAttachmentSize')->willReturn(1024);
 		$this->config->method('getStagedFileTtl')->willReturn(3600);
+		$this->config->method('getMaxAttachments')->willReturn(3);
 
 		$this->userFolder = $this->createMock(IUserFolder::class);
 		$this->rootFolder->method('getUserFolder')->with('alice')->willReturn($this->userFolder);
@@ -52,12 +56,15 @@ class FileStagingServiceTest extends TestCase {
 		$random = $this->createMock(ISecureRandom::class);
 		$random->method('generate')->willReturn(self::PREFIX);
 
+		$this->container = $this->createMock(ContainerInterface::class);
+
 		$this->fileStagingService = new FileStagingService(
 			$this->rootFolder,
 			$this->config,
 			$timeFactory,
 			$random,
 			$this->createMock(LoggerInterface::class),
+			$this->container,
 		);
 	}
 
@@ -182,5 +189,79 @@ class FileStagingServiceTest extends TestCase {
 		$this->userFolder->method('get')->willReturn($folder);
 
 		$this->fileStagingService->stage('alice', [new Attachment('content', 'note.txt')]);
+	}
+
+	public function testTooManyAttachmentsAreRejectedBeforeAnythingIsWritten(): void {
+		$this->userFolder->expects(self::never())->method('get');
+
+		try {
+			$this->fileStagingService->stage('alice', array_fill(0, 4, new Attachment('a', 'a.txt')));
+			self::fail('Expected an ApiException');
+		} catch (ApiException $e) {
+			self::assertSame(Http::STATUS_BAD_REQUEST, $e->getStatus());
+		}
+	}
+
+	public function testEmptyAttachmentsAreRejected(): void {
+		$this->userFolder->expects(self::never())->method('get');
+
+		$this->expectException(ApiException::class);
+		$this->fileStagingService->stage('alice', [new Attachment('', 'empty.png')]);
+	}
+
+	public function testCleanupBypassesTheTrashBin(): void {
+		if (!interface_exists(ITrashManager::class)) {
+			self::markTestSkipped('files_trashbin is not available');
+		}
+
+		$calls = [];
+		$trashManager = $this->createMock(ITrashManager::class);
+		$trashManager->method('pauseTrash')->willReturnCallback(function () use (&$calls): void {
+			$calls[] = 'pause';
+		});
+		$trashManager->method('resumeTrash')->willReturnCallback(function () use (&$calls): void {
+			$calls[] = 'resume';
+		});
+		$this->container->method('get')->with(ITrashManager::class)->willReturn($trashManager);
+
+		$file = $this->createMock(File::class);
+		$file->method('delete')->willReturnCallback(function () use (&$calls): void {
+			$calls[] = 'delete';
+		});
+		$this->userFolder->method('getFirstNodeById')->with(11)->willReturn($file);
+
+		$this->fileStagingService->cleanup('alice', [11]);
+
+		self::assertSame(['pause', 'delete', 'resume'], $calls);
+	}
+
+	public function testTheTrashBinIsResumedWhenADeleteFails(): void {
+		if (!interface_exists(ITrashManager::class)) {
+			self::markTestSkipped('files_trashbin is not available');
+		}
+
+		$trashManager = $this->createMock(ITrashManager::class);
+		$trashManager->expects(self::once())->method('pauseTrash');
+		$trashManager->expects(self::once())->method('resumeTrash');
+		$this->container->method('get')->willReturn($trashManager);
+
+		$file = $this->createMock(File::class);
+		$file->method('delete')->willThrowException(new \RuntimeException('storage gone'));
+		$this->userFolder->method('getFirstNodeById')->willReturn($file);
+
+		$this->fileStagingService->cleanup('alice', [11]);
+	}
+
+	public function testCleanupStillDeletesWithoutATrashBin(): void {
+		$this->container->method('get')->willThrowException(
+			new class('not registered') extends \RuntimeException implements \Psr\Container\NotFoundExceptionInterface {
+			},
+		);
+
+		$file = $this->createMock(File::class);
+		$file->expects(self::once())->method('delete');
+		$this->userFolder->method('getFirstNodeById')->willReturn($file);
+
+		$this->fileStagingService->cleanup('alice', [11]);
 	}
 }

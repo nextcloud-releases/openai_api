@@ -14,6 +14,7 @@ use OCA\OpenAiApi\Response\ApiErrorResponse;
 use OCA\OpenAiApi\Response\SseResponse;
 use OCA\OpenAiApi\Service\ChatCompletionSerializer;
 use OCA\OpenAiApi\Service\ChatTaskFactory;
+use OCA\OpenAiApi\Service\ConcurrencyLimiter;
 use OCA\OpenAiApi\Service\Config;
 use OCA\OpenAiApi\Service\PreparedTask;
 use OCA\OpenAiApi\Service\SseWriter;
@@ -41,6 +42,7 @@ class ChatController extends AbstractApiController {
 		private ChatCompletionSerializer $serializer,
 		private ToolCallMapper $toolCallMapper,
 		private Config $config,
+		private ConcurrencyLimiter $concurrencyLimiter,
 		private ITimeFactory $timeFactory,
 		private LoggerInterface $logger,
 		private ?string $userId,
@@ -139,12 +141,24 @@ class ChatController extends AbstractApiController {
 	 * Providers report intermediate output cumulatively and Task Processing
 	 * persists it at most once every two seconds, so chunks arrive at roughly
 	 * that cadence rather than per token.
+	 *
+	 * The concurrency slot is claimed before the task is scheduled and held until
+	 * the stream ends, so a user at the limit cannot queue tasks nobody waits for.
+	 * Whenever the stream ends before the task did - client gone, polling failed -
+	 * the task is cancelled instead of being left to run unobserved.
 	 */
 	private function streamProgressively(PreparedTask $prepared): SseResponse|ApiErrorResponse {
 		$prepared->task->setPreferStreaming(true);
 		try {
+			$this->concurrencyLimiter->acquire($this->userId);
+		} catch (ApiException $e) {
+			$this->chatTaskFactory->cleanup($this->userId, $prepared->stagedFileIds);
+			return $this->error($e);
+		}
+		try {
 			$this->taskRunner->schedule($prepared->task);
 		} catch (ApiException $e) {
+			$this->concurrencyLimiter->release();
 			$this->chatTaskFactory->cleanup($this->userId, $prepared->stagedFileIds);
 			return $this->error($e);
 		}
@@ -158,11 +172,11 @@ class ChatController extends AbstractApiController {
 			$contentCursor = new StreamCursor();
 			$reasoningCursor = new StreamCursor();
 			$lastWriteAt = microtime(true);
+			$final = $task;
 
 			try {
 				$writer->event($this->serializer->chunk($id, $model, $created, ['role' => 'assistant', 'content' => '']));
 
-				$final = $task;
 				foreach ($this->taskRunner->poll($task) as $current) {
 					$final = $current;
 					$wrote = $this->emitDeltas(
@@ -176,9 +190,6 @@ class ChatController extends AbstractApiController {
 						$lastWriteAt = microtime(true);
 					}
 					if ($writer->isAborted()) {
-						if ($taskId !== null) {
-							$this->taskRunner->cancel($taskId);
-						}
 						return;
 					}
 				}
@@ -199,6 +210,10 @@ class ChatController extends AbstractApiController {
 				$writer->event(ApiException::serverError('The request could not be completed.')->toArray());
 				$writer->done();
 			} finally {
+				if ($taskId !== null && !$this->taskRunner->isTerminal($final)) {
+					$this->taskRunner->cancel($taskId);
+				}
+				$this->concurrencyLimiter->release();
 				$this->chatTaskFactory->cleanup($this->userId, $prepared->stagedFileIds);
 			}
 		});

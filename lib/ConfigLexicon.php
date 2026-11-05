@@ -26,6 +26,7 @@ class ConfigLexicon implements ILexicon {
 	public const STAGED_FILE_TTL = 'staged_file_ttl';
 	public const MAX_CONCURRENT_REQUESTS = 'max_concurrent_requests';
 	public const MAX_ATTACHMENT_SIZE = 'max_attachment_size';
+	public const MAX_ATTACHMENTS = 'max_attachments';
 
 	public const REAL_STREAMING_DEFAULT = true;
 	public const REQUEST_TIMEOUT_DEFAULT = 300;
@@ -33,6 +34,7 @@ class ConfigLexicon implements ILexicon {
 	public const STAGED_FILE_TTL_DEFAULT = 3600;
 	public const MAX_CONCURRENT_REQUESTS_DEFAULT = 5;
 	public const MAX_ATTACHMENT_SIZE_DEFAULT = 52428800;
+	public const MAX_ATTACHMENTS_DEFAULT = 20;
 
 	#[\Override]
 	public function getStrictness(): Strictness {
@@ -85,6 +87,14 @@ class ConfigLexicon implements ILexicon {
 				defaultRaw: self::MAX_ATTACHMENT_SIZE_DEFAULT,
 				definition: 'Maximum size in bytes of a single inline attachment, and of all attachments'
 					. ' of one request taken together.',
+			),
+			new Entry(
+				self::MAX_ATTACHMENTS,
+				ValueType::INT,
+				defaultRaw: self::MAX_ATTACHMENTS_DEFAULT,
+				definition: 'Maximum number of inline attachments one request may carry. Every attachment'
+					. ' is staged as a file in the requesting user\'s storage, so this bounds how many files'
+					. ' a single request can create.',
 			),
 		];
 	}

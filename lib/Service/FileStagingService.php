@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 namespace OCA\OpenAiApi\Service;
 
+use OCA\Files_Trashbin\Trash\ITrashManager;
 use OCA\OpenAiApi\AppInfo\Application;
 use OCA\OpenAiApi\Exception\ApiException;
 use OCP\AppFramework\Http;
@@ -19,6 +20,8 @@ use OCP\Files\IRootFolder;
 use OCP\Files\Node;
 use OCP\Files\NotFoundException;
 use OCP\Security\ISecureRandom;
+use Psr\Container\ContainerExceptionInterface;
+use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -27,7 +30,8 @@ use Psr\Log\LoggerInterface;
  * Task Processing resolves file slots through the user mount cache, so files in
  * appdata are rejected for task input - attachments have to live somewhere the
  * user has a mount for. They are written to a hidden folder in the user's root
- * and removed again once the request that needs them is done.
+ * and removed again once the request that needs them is done. Removal skips the
+ * trash bin, so request content does not outlive the request there.
  */
 class FileStagingService {
 	/** Length of the random prefix that marks a file as one this app staged. */
@@ -41,6 +45,7 @@ class FileStagingService {
 		private ITimeFactory $timeFactory,
 		private ISecureRandom $random,
 		private LoggerInterface $logger,
+		private ContainerInterface $container,
 	) {
 	}
 
@@ -54,7 +59,7 @@ class FileStagingService {
 			return [];
 		}
 
-		$this->assertWithinSizeLimit($attachments);
+		$this->assertWithinLimits($attachments);
 
 		try {
 			$folder = $this->getStagingFolder($userId);
@@ -94,14 +99,16 @@ class FileStagingService {
 			$this->logger->warning('Could not open the user folder to clean up staged files', ['exception' => $e]);
 			return;
 		}
-		foreach ($fileIds as $fileId) {
-			try {
-				$node = $userFolder->getFirstNodeById($fileId);
-				$node?->delete();
-			} catch (\Throwable $e) {
-				$this->logger->warning('Could not delete staged file ' . $fileId, ['exception' => $e]);
+		$this->withoutTrash(function () use ($userFolder, $fileIds): void {
+			foreach ($fileIds as $fileId) {
+				try {
+					$node = $userFolder->getFirstNodeById($fileId);
+					$node?->delete();
+				} catch (\Throwable $e) {
+					$this->logger->warning('Could not delete staged file ' . $fileId, ['exception' => $e]);
+				}
 			}
-		}
+		});
 	}
 
 	/**
@@ -145,14 +152,28 @@ class FileStagingService {
 	}
 
 	/**
+	 * Checked before anything is written: every attachment becomes a file, so the
+	 * count bounds how many files one request can create, and empty attachments
+	 * would make that cost free in terms of the size limit.
+	 *
 	 * @param list<Attachment> $attachments
 	 * @throws ApiException
 	 */
-	private function assertWithinSizeLimit(array $attachments): void {
+	private function assertWithinLimits(array $attachments): void {
+		$maxCount = $this->config->getMaxAttachments();
+		if (count($attachments) > $maxCount) {
+			throw ApiException::invalidRequest(
+				'A request must not carry more than ' . $maxCount . ' attachments.',
+			);
+		}
+
 		$limit = $this->config->getMaxAttachmentSize();
 		$total = 0;
 		foreach ($attachments as $attachment) {
 			$size = strlen($attachment->content);
+			if ($size === 0) {
+				throw ApiException::invalidRequest('Attachments must not be empty.');
+			}
 			$total += $size;
 			if ($size > $limit || $total > $limit) {
 				throw new ApiException(
@@ -182,18 +203,52 @@ class FileStagingService {
 	 */
 	private function sweep(Folder $folder): void {
 		$expiry = $this->timeFactory->getTime() - $this->config->getStagedFileTtl();
-		try {
-			foreach ($folder->getDirectoryListing() as $node) {
-				if (!$node instanceof File || $node->getMTime() >= $expiry) {
-					continue;
+		$this->withoutTrash(function () use ($folder, $expiry): void {
+			try {
+				foreach ($folder->getDirectoryListing() as $node) {
+					if (!$node instanceof File || $node->getMTime() >= $expiry) {
+						continue;
+					}
+					if (preg_match(self::PREFIX_PATTERN, $node->getName()) === 1) {
+						$node->delete();
+					}
 				}
-				if (preg_match(self::PREFIX_PATTERN, $node->getName()) === 1) {
-					$node->delete();
-				}
+			} catch (\Throwable $e) {
+				$this->logger->warning('Could not sweep the attachment staging folder', ['exception' => $e]);
 			}
-		} catch (\Throwable $e) {
-			$this->logger->warning('Could not sweep the attachment staging folder', ['exception' => $e]);
+		});
+	}
+
+	/**
+	 * Run deletions with the trash bin paused, so staged files are removed for good.
+	 *
+	 * Staged files hold request content - images, audio, documents - that would
+	 * otherwise sit in the user's trash bin for its whole retention period. The
+	 * trash bin is an optional app, so nothing is paused when it is not enabled.
+	 *
+	 * @param \Closure(): void $delete
+	 */
+	private function withoutTrash(\Closure $delete): void {
+		$trashManager = $this->getTrashManager();
+		$trashManager?->pauseTrash();
+		try {
+			$delete();
+		} finally {
+			$trashManager?->resumeTrash();
 		}
+	}
+
+	private function getTrashManager(): ?ITrashManager {
+		if (!interface_exists(ITrashManager::class)) {
+			return null;
+		}
+		try {
+			$trashManager = $this->container->get(ITrashManager::class);
+		} catch (ContainerExceptionInterface $e) {
+			$this->logger->debug('The trash bin is not available', ['exception' => $e]);
+			return null;
+		}
+		return $trashManager instanceof ITrashManager ? $trashManager : null;
 	}
 
 	private function sanitize(string $filename): string {

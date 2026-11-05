@@ -235,4 +235,72 @@ class ChatMessageMapperTest extends TestCase {
 			$this->mapper->flattenToPrompt($result),
 		);
 	}
+
+	public function testRemoteImageUrlInHistoryIsRejected(): void {
+		$this->expectException(ApiException::class);
+		$this->mapper->map([
+			['role' => 'user', 'content' => [
+				['type' => 'image_url', 'image_url' => ['url' => 'http://169.254.169.254/latest/meta-data/']],
+			]],
+			['role' => 'user', 'content' => 'follow up'],
+		], null);
+	}
+
+	public function testRemoteFileInHistoryIsRejected(): void {
+		$this->expectException(ApiException::class);
+		$this->mapper->map([
+			['role' => 'user', 'content' => [
+				['type' => 'file', 'file' => ['file_data' => 'http://intranet.local/report.pdf']],
+			]],
+			['role' => 'user', 'content' => 'follow up'],
+		], null);
+	}
+
+	public function testUnknownContentPartInHistoryIsRejected(): void {
+		$this->expectException(ApiException::class);
+		$this->mapper->map([
+			['role' => 'user', 'content' => [
+				['type' => 'video_url', 'video_url' => ['url' => 'http://intranet.local/clip.mp4']],
+			]],
+			['role' => 'user', 'content' => 'follow up'],
+		], null);
+	}
+
+	public function testUnknownFieldsAreDroppedFromHistoryParts(): void {
+		$result = $this->mapper->map([
+			['role' => 'user', 'content' => [
+				[
+					'type' => 'text',
+					'text' => 'look',
+					'image_url' => ['url' => 'http://intranet.local/cat.png'],
+				],
+				[
+					'type' => 'image_url',
+					'image_url' => ['url' => 'data:image/png;base64,AAA', 'detail' => 'low', 'extra' => 'x'],
+				],
+			]],
+			['role' => 'user', 'content' => 'follow up'],
+		], null);
+
+		$decoded = json_decode($result->history[0], true);
+		self::assertSame([
+			['type' => 'text', 'text' => 'look'],
+			['type' => 'image_url', 'image_url' => ['url' => 'data:image/png;base64,AAA', 'detail' => 'low']],
+		], $decoded['content']);
+	}
+
+	public function testStructuredToolResultsInHistoryAreNotRestricted(): void {
+		$result = $this->mapper->map([
+			['role' => 'user', 'content' => 'weather?'],
+			['role' => 'assistant', 'content' => '', 'tool_calls' => [
+				['id' => 'c1', 'type' => 'function', 'function' => ['name' => 'weather', 'arguments' => '{}']],
+			]],
+			['role' => 'tool', 'tool_call_id' => 'c1', 'content' => [['temperature' => 20]]],
+			['role' => 'assistant', 'content' => [['type' => 'refusal', 'refusal' => 'no']]],
+			['role' => 'user', 'content' => 'thanks'],
+		], null);
+
+		self::assertCount(4, $result->history);
+		self::assertSame('[{"temperature":20}]', json_decode($result->history[2], true)['content']);
+	}
 }

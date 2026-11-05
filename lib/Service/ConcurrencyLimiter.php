@@ -32,6 +32,13 @@ class ConcurrencyLimiter {
 	/** Grace period on top of the request timeout before a slot frees itself. */
 	private const SLOT_TTL_MARGIN = 60;
 
+	/** The limit is in force. */
+	public const STATUS_ENFORCED = 'enforced';
+	/** The administrator set the limit to 0. */
+	public const STATUS_DISABLED = 'disabled';
+	/** No distributed cache with atomic operations is configured, so nothing can be enforced. */
+	public const STATUS_NO_CACHE = 'no_cache';
+
 	private ?IMemcache $cache;
 	private ?string $slot = null;
 	private int $depth = 0;
@@ -44,6 +51,21 @@ class ConcurrencyLimiter {
 		// Claiming a slot has to be atomic, which only the memcache interface offers.
 		$cache = $cacheFactory->createDistributed(Application::APP_ID . '-concurrency-');
 		$this->cache = $cache instanceof IMemcache ? $cache : null;
+	}
+
+	/**
+	 * Whether the limit is actually enforced, and if not, why.
+	 *
+	 * @return self::STATUS_*
+	 */
+	public function getStatus(): string {
+		if ($this->config->getMaxConcurrentRequests() <= 0) {
+			return self::STATUS_DISABLED;
+		}
+		if ($this->cache === null) {
+			return self::STATUS_NO_CACHE;
+		}
+		return self::STATUS_ENFORCED;
 	}
 
 	/**

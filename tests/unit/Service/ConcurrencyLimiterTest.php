@@ -134,4 +134,25 @@ class ConcurrencyLimiterTest extends TestCase {
 		$limiter->release();
 		self::assertTrue(true);
 	}
+
+	public function testStatusIsEnforcedWithALimitAndADistributedCache(): void {
+		self::assertSame(ConcurrencyLimiter::STATUS_ENFORCED, $this->limiter(5)->getStatus());
+	}
+
+	public function testStatusIsDisabledWhenTheLimitIsTurnedOff(): void {
+		self::assertSame(ConcurrencyLimiter::STATUS_DISABLED, $this->limiter(0)->getStatus());
+	}
+
+	public function testStatusReportsAMissingDistributedCache(): void {
+		$this->config->method('getMaxConcurrentRequests')->willReturn(5);
+		$this->cacheFactory->method('createDistributed')->willReturn($this->createMock(ICache::class));
+
+		$limiter = new ConcurrencyLimiter(
+			$this->cacheFactory,
+			$this->config,
+			$this->createMock(LoggerInterface::class),
+		);
+
+		self::assertSame(ConcurrencyLimiter::STATUS_NO_CACHE, $limiter->getStatus());
+	}
 }

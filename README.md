@@ -98,6 +98,7 @@ synchronous and progressive streaming is on.
 | `staged_file_ttl` | `3600` | Seconds after which staged input files of abandoned requests are deleted. |
 | `max_concurrent_requests` | `5` | How many requests of one user may occupy a PHP worker at once. `0` disables the limit. |
 | `max_attachment_size` | `52428800` | Maximum size in bytes of one attachment, and of all attachments of a request together. |
+| `max_attachments` | `20` | Maximum number of inline attachments one request may carry. |
 
 ```
 occ config:app:set openai_api real_streaming --value=0 --type=boolean
@@ -114,7 +115,9 @@ keep one account from occupying the whole worker pool:
 - `max_concurrent_requests` caps how many requests of one user may be in flight
   at the same time; further requests are answered with `429` until one finishes.
   The slots live in the distributed cache, so the cap only applies when one is
-  configured.
+  configured. The admin settings show a warning when the cap is not enforced.
+  A progressively streamed request claims its slot before the task is
+  scheduled, and cancels the task if the stream ends before it does.
 
 ## Attachments
 
@@ -122,6 +125,7 @@ Task Processing resolves file slots through the user mount cache, so attachments
 cannot live in appdata. Inline attachments on the final turn of a conversation,
 and audio uploaded to `/v1/audio/transcriptions`, are written to a hidden
 `.openai_api` folder in the user's root and deleted once the request is done.
+Deleting them bypasses the trash bin, so request content does not stay there.
 Files left behind by a request that died are swept on that user's next request;
 the sweep only touches files this app staged, so a folder a user happens to keep
 under that name does not lose its contents. Desktop and mobile clients will sync
@@ -130,10 +134,15 @@ the folder while files are in it.
 The path has to be a folder in the user's own storage. If a share or a group
 folder is mounted there the request is rejected rather than staging attachments
 where somebody else can read them. Attachments are limited to
-`max_attachment_size` each and in total.
+`max_attachment_size` each and in total, and to `max_attachments` per request;
+empty attachments are rejected.
 
-Attachments in earlier turns of a conversation are passed through to the provider
-as OpenAI content parts and are not staged.
+Attachments in earlier turns of a conversation are passed to the provider as
+OpenAI content parts and are not staged. Those parts are rebuilt from their known
+fields, and the same rules as on the final turn apply: only inline `data:` URLs,
+and only the `text`, `refusal`, `image_url`, `input_audio` and `file` part types.
+Providers forward the parts to their inference backend, which could otherwise be
+made to fetch arbitrary URLs.
 
 ## Development
 

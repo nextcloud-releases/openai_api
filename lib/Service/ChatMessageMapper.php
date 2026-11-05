@@ -168,15 +168,18 @@ class ChatMessageMapper {
 
 		$entry = ['role' => $role];
 
-		// Structured content is passed through so that providers can forward the
-		// original content parts; only the final turn needs staging as files.
+		// Structured content is passed on so that providers can forward the content
+		// parts; only the final turn needs staging as files.
 		$content = $message['content'] ?? '';
-		$entry['content'] = is_array($content) ? array_values($content) : $this->contentToText($content);
 
 		if ($role === 'tool') {
 			$entry['content'] = $this->toolContentToText($content);
 			$entry['name'] = (string)($message['name'] ?? '');
 			$entry['tool_call_id'] = (string)($message['tool_call_id'] ?? '');
+		} else {
+			$entry['content'] = is_array($content)
+				? $this->normaliseHistoryContent($content)
+				: $this->contentToText($content);
 		}
 
 		if ($role === 'assistant' && isset($message['tool_calls']) && is_array($message['tool_calls'])) {
@@ -184,6 +187,97 @@ class ChatMessageMapper {
 		}
 
 		return json_encode($entry, JSON_UNESCAPED_SLASHES) ?: '{}';
+	}
+
+	/**
+	 * Rebuild the content parts of an earlier turn from the fields that are known.
+	 *
+	 * Providers forward these parts to their inference backend as they are, and a
+	 * backend may fetch any URL it finds in them. Only inline data is therefore
+	 * accepted, the same as for the final turn, and parts are rebuilt rather than
+	 * copied so that no unknown field - a `video_url`, say - rides along.
+	 *
+	 * @return list<array<string, mixed>|string>
+	 * @throws ApiException
+	 */
+	private function normaliseHistoryContent(array $content): array {
+		$parts = [];
+		foreach ($content as $part) {
+			if (is_string($part)) {
+				$parts[] = $part;
+				continue;
+			}
+			if (!is_array($part) || !is_string($part['type'] ?? null)) {
+				throw ApiException::invalidRequest('Malformed content part.', 'messages');
+			}
+			switch ($part['type']) {
+				case 'text':
+					if (!is_string($part['text'] ?? null)) {
+						throw ApiException::invalidRequest('Malformed text content part.', 'messages');
+					}
+					$parts[] = ['type' => 'text', 'text' => $part['text']];
+					break;
+				case 'refusal':
+					if (!is_string($part['refusal'] ?? null)) {
+						throw ApiException::invalidRequest('Malformed refusal content part.', 'messages');
+					}
+					$parts[] = ['type' => 'refusal', 'refusal' => $part['refusal']];
+					break;
+				case 'image_url':
+					$url = $part['image_url']['url'] ?? null;
+					if (!is_string($url)) {
+						throw ApiException::invalidRequest('Malformed image_url content part.', 'messages');
+					}
+					$this->assertInlineDataUrl($url);
+					$imageUrl = ['url' => $url];
+					if (is_string($part['image_url']['detail'] ?? null)) {
+						$imageUrl['detail'] = $part['image_url']['detail'];
+					}
+					$parts[] = ['type' => 'image_url', 'image_url' => $imageUrl];
+					break;
+				case 'input_audio':
+					$data = $part['input_audio']['data'] ?? null;
+					$format = $part['input_audio']['format'] ?? 'wav';
+					if (!is_string($data) || !is_string($format)) {
+						throw ApiException::invalidRequest('Malformed input_audio content part.', 'messages');
+					}
+					$parts[] = ['type' => 'input_audio', 'input_audio' => ['data' => $data, 'format' => $format]];
+					break;
+				case 'file':
+					$fileData = $part['file']['file_data'] ?? null;
+					if (!is_string($fileData)) {
+						throw ApiException::invalidRequest(
+							'Only inline file_data is supported in file content parts.',
+							'messages',
+						);
+					}
+					$this->assertInlineDataUrl($fileData);
+					$file = ['file_data' => $fileData];
+					if (is_string($part['file']['filename'] ?? null)) {
+						$file['filename'] = basename($part['file']['filename']);
+					}
+					$parts[] = ['type' => 'file', 'file' => $file];
+					break;
+				default:
+					throw ApiException::invalidRequest(
+						'Unsupported content part type "' . $part['type'] . '".',
+						'messages',
+					);
+			}
+		}
+		return $parts;
+	}
+
+	/**
+	 * @throws ApiException
+	 */
+	private function assertInlineDataUrl(string $url): void {
+		if (!str_starts_with($url, 'data:')) {
+			throw ApiException::invalidRequest(
+				'Only inline data: URLs are supported for attachments; fetching remote URLs is not implemented.',
+				'messages',
+			);
+		}
 	}
 
 	/**
@@ -289,12 +383,7 @@ class ChatMessageMapper {
 	 * @throws ApiException
 	 */
 	private function decodeDataUrl(string $url, string $basename): Attachment {
-		if (!str_starts_with($url, 'data:')) {
-			throw ApiException::invalidRequest(
-				'Only inline data: URLs are supported for attachments; fetching remote URLs is not implemented.',
-				'messages',
-			);
-		}
+		$this->assertInlineDataUrl($url);
 		if (preg_match('/^data:([^;,]*)((?:;[^,]*)*),(.*)$/s', $url, $matches) !== 1) {
 			throw ApiException::invalidRequest('Malformed data: URL.', 'messages');
 		}
