@@ -24,7 +24,7 @@
 		"@nextcloud/initial-state": "^3.0.0",
 		"@nextcloud/l10n": "^3.2.0",
 		"@nextcloud/logger": "^3.0.2",
-		"@nextcloud/password-confirmation": "^6.0.2",
+		"@nextcloud/password-confirmation": "^6.2.1",
 		"@nextcloud/router": "^3.0.1",
 		"@nextcloud/vue": "^9.14.1",
 		"vue": "^3.5.16"
