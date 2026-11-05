@@ -23,7 +23,7 @@ on:
       - tests/**
 
 env:
-  APP_NAME: integration_replicate
+  APP_NAME: openai_api
 
 jobs:
   php:
