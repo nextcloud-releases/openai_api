@@ -29,7 +29,7 @@ availability and guest restrictions as any other Task Processing consumer.
 	<bugs>https://github.com/nextcloud/server/issues</bugs>
 
 	<dependencies>
-		<nextcloud min-version="36" max-version="36"/>
+		<nextcloud min-version="35" max-version="36"/>
 	</dependencies>
 
 

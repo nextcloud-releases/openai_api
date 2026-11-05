@@ -35,7 +35,7 @@ class FileStagingServiceTest extends TestCase {
 
 	private IRootFolder&MockObject $rootFolder;
 	private Config&MockObject $config;
-	private IUserFolder&MockObject $userFolder;
+	private Folder&MockObject $userFolder;
 	private ContainerInterface&MockObject $container;
 	private FileStagingService $fileStagingService;
 
@@ -47,7 +47,8 @@ class FileStagingServiceTest extends TestCase {
 		$this->config->method('getStagedFileTtl')->willReturn(3600);
 		$this->config->method('getMaxAttachments')->willReturn(3);
 
-		$this->userFolder = $this->createMock(IUserFolder::class);
+		// IUserFolder only exists since Nextcloud 36; fall back to Folder on 35
+		$this->userFolder = $this->createMock(interface_exists(IUserFolder::class) ? IUserFolder::class : Folder::class);
 		$this->rootFolder->method('getUserFolder')->with('alice')->willReturn($this->userFolder);
 
 		$timeFactory = $this->createMock(ITimeFactory::class);
