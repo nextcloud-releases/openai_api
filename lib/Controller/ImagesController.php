@@ -16,6 +16,7 @@ use OCA\OpenAiApi\Service\TaskFileService;
 use OCA\OpenAiApi\Service\TaskRunner;
 use OCP\AppFramework\Http\Attribute\NoAdminRequired;
 use OCP\AppFramework\Http\Attribute\NoCSRFRequired;
+use OCP\AppFramework\Http\Attribute\UserRateLimit;
 use OCP\AppFramework\Http\JSONResponse;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\IRequest;
@@ -23,6 +24,9 @@ use OCP\IURLGenerator;
 use OCP\TaskProcessing\Task;
 
 class ImagesController extends AbstractApiController {
+	/** Matches the upper bound OpenAI enforces for `n`. */
+	private const MAX_IMAGES = 10;
+
 	public function __construct(
 		string $appName,
 		IRequest $request,
@@ -38,12 +42,19 @@ class ImagesController extends AbstractApiController {
 
 	#[NoAdminRequired]
 	#[NoCSRFRequired]
+	#[UserRateLimit(limit: 10, period: 60)]
 	public function generations(): JSONResponse {
 		try {
 			$params = $this->request->getParams();
 			$prompt = $this->requireString($params['prompt'] ?? null, 'prompt');
 			$model = is_string($params['model'] ?? null) ? $params['model'] : null;
 			$numberOfImages = $this->toPositiveInt($params['n'] ?? null) ?? 1;
+			if ($numberOfImages > self::MAX_IMAGES) {
+				throw ApiException::invalidRequest(
+					'"n" must be between 1 and ' . self::MAX_IMAGES . '.',
+					'n',
+				);
+			}
 
 			// Unlike OpenAI this defaults to b64_json: a URL would point back at an
 			// authenticated Nextcloud route, and clients do not send credentials

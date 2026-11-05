@@ -81,20 +81,32 @@ class TaskFileService {
 		return $content;
 	}
 
+	/**
+	 * The type to serve a task file as.
+	 *
+	 * Both the stored type and the sniffed one are passed through
+	 * getSecureMimeType(), which downgrades everything a browser could execute.
+	 * Its `application/octet-stream` answer means "not known to be safe", so it
+	 * must not be taken as a reason to fall back to the unchecked type.
+	 */
 	public function getContentType(File $file): string {
-		$contentType = $file->getMimeType();
+		$stored = $this->mimeTypeDetector->getSecureMimeType($file->getMimeType());
 		if (!function_exists('mime_content_type')) {
-			return $contentType;
+			return $stored;
 		}
 		$handle = $file->fopen('rb');
 		if ($handle === false) {
-			return $contentType;
+			return $stored;
 		}
-		$detected = mime_content_type($handle);
+		try {
+			$detected = mime_content_type($handle);
+		} finally {
+			fclose($handle);
+		}
 		if ($detected === false) {
-			return $contentType;
+			return $stored;
 		}
 		$detected = $this->mimeTypeDetector->getSecureMimeType($detected);
-		return $detected === 'application/octet-stream' ? $contentType : $detected;
+		return $detected === 'application/octet-stream' ? $stored : $detected;
 	}
 }

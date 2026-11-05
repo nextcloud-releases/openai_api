@@ -19,6 +19,7 @@ use OCA\OpenAiApi\Service\TaskRunner;
 use OCP\AppFramework\Http;
 use OCP\AppFramework\Http\Attribute\NoAdminRequired;
 use OCP\AppFramework\Http\Attribute\NoCSRFRequired;
+use OCP\AppFramework\Http\Attribute\UserRateLimit;
 use OCP\AppFramework\Http\DataDisplayResponse;
 use OCP\AppFramework\Http\JSONResponse;
 use OCP\IRequest;
@@ -42,6 +43,7 @@ class AudioController extends AbstractApiController {
 	 */
 	#[NoAdminRequired]
 	#[NoCSRFRequired]
+	#[UserRateLimit(limit: 30, period: 60)]
 	public function transcriptions(): JSONResponse|DataDisplayResponse {
 		$stagedFileIds = [];
 		try {
@@ -95,6 +97,7 @@ class AudioController extends AbstractApiController {
 	 */
 	#[NoAdminRequired]
 	#[NoCSRFRequired]
+	#[UserRateLimit(limit: 30, period: 60)]
 	public function speech(): JSONResponse|DataDisplayResponse {
 		try {
 			$input = $this->requireString($this->request->getParam('input'), 'input');
@@ -136,7 +139,12 @@ class AudioController extends AbstractApiController {
 		if ($upload === null || ($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
 			throw ApiException::invalidRequest('A "file" upload is required.', 'file');
 		}
-		$content = file_get_contents($upload['tmp_name']);
+		$tmpName = $upload['tmp_name'] ?? null;
+		// Only ever read back what PHP itself received as an upload
+		if (!is_string($tmpName) || !is_uploaded_file($tmpName)) {
+			throw ApiException::invalidRequest('A "file" upload is required.', 'file');
+		}
+		$content = file_get_contents($tmpName);
 		if ($content === false) {
 			throw ApiException::serverError('The uploaded file could not be read.');
 		}

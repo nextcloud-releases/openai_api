@@ -63,4 +63,26 @@ class Config {
 			ConfigLexicon::STAGED_FILE_TTL_DEFAULT,
 		));
 	}
+
+	/**
+	 * How many requests of one user may occupy a PHP worker at once, 0 for no limit.
+	 */
+	public function getMaxConcurrentRequests(): int {
+		return max(0, $this->appConfig->getValueInt(
+			Application::APP_ID,
+			ConfigLexicon::MAX_CONCURRENT_REQUESTS,
+			ConfigLexicon::MAX_CONCURRENT_REQUESTS_DEFAULT,
+		));
+	}
+
+	/**
+	 * Maximum size in bytes of a single attachment and of all attachments of a request.
+	 */
+	public function getMaxAttachmentSize(): int {
+		return max(1, $this->appConfig->getValueInt(
+			Application::APP_ID,
+			ConfigLexicon::MAX_ATTACHMENT_SIZE,
+			ConfigLexicon::MAX_ATTACHMENT_SIZE_DEFAULT,
+		));
+	}
 }

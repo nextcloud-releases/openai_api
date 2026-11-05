@@ -23,6 +23,12 @@ OpenAI client sends, so no extra configuration is needed. Tasks are scheduled on
 behalf of the authenticated user and obey the same provider selection, task type
 availability and guest restrictions as any other Task Processing consumer.
 
+The endpoints are exempt from the CSRF token check, since a client speaking the
+OpenAI dialect has no way to obtain one. That exemption only covers requests
+that authenticate with credentials: a request that arrives on a browser session
+instead still has to carry a CSRF token to write anything, so a page on another
+site cannot drive the API with a logged-in user's cookie.
+
 ## Endpoints
 
 | Endpoint | Task type |
@@ -90,10 +96,25 @@ synchronous and progressive streaming is on.
 | `request_timeout` | `300` | Seconds to wait for a task before cancelling it. |
 | `poll_interval_ms` | `500` | Milliseconds between task polls while streaming. |
 | `staged_file_ttl` | `3600` | Seconds after which staged input files of abandoned requests are deleted. |
+| `max_concurrent_requests` | `5` | How many requests of one user may occupy a PHP worker at once. `0` disables the limit. |
+| `max_attachment_size` | `52428800` | Maximum size in bytes of one attachment, and of all attachments of a request together. |
 
 ```
 occ config:app:set openai_api real_streaming --value=0 --type=boolean
 ```
+
+### Limits
+
+Every request drives a task to a terminal state inside the request, so it holds
+a PHP worker until the task finishes or `request_timeout` is reached. Two limits
+keep one account from occupying the whole worker pool:
+
+- Each endpoint is rate limited per user - 60 requests a minute for chat and
+  completions, 30 for the audio endpoints, 10 for image generation.
+- `max_concurrent_requests` caps how many requests of one user may be in flight
+  at the same time; further requests are answered with `429` until one finishes.
+  The slots live in the distributed cache, so the cap only applies when one is
+  configured.
 
 ## Attachments
 
@@ -101,8 +122,15 @@ Task Processing resolves file slots through the user mount cache, so attachments
 cannot live in appdata. Inline attachments on the final turn of a conversation,
 and audio uploaded to `/v1/audio/transcriptions`, are written to a hidden
 `.openai_api` folder in the user's root and deleted once the request is done.
-Files left behind by a request that died are swept on that user's next request.
-Desktop and mobile clients will sync the folder while files are in it.
+Files left behind by a request that died are swept on that user's next request;
+the sweep only touches files this app staged, so a folder a user happens to keep
+under that name does not lose its contents. Desktop and mobile clients will sync
+the folder while files are in it.
+
+The path has to be a folder in the user's own storage. If a share or a group
+folder is mounted there the request is rejected rather than staging attachments
+where somebody else can read them. Attachments are limited to
+`max_attachment_size` each and in total.
 
 Attachments in earlier turns of a conversation are passed through to the provider
 as OpenAI content parts and are not staged.
@@ -147,5 +175,7 @@ Nextcloud OCS API, so there is nothing to generate or keep in sync.
   the streaming setting.
 - **Ignored parameters**: `temperature`, `top_p`, `n`, `stop`, `tool_choice`,
   `seed` and friends have no Task Processing slot and are accepted but dropped.
+  `n` is the exception on `/v1/images/generations`, where it selects the number
+  of images and is capped at 10 as it is upstream.
   `max_tokens` / `max_completion_tokens` are forwarded when the provider declares
   the slot.

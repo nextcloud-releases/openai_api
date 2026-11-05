@@ -18,6 +18,7 @@ use OCA\OpenAiApi\Service\SseWriter;
 use OCA\OpenAiApi\Service\TaskRunner;
 use OCP\AppFramework\Http\Attribute\NoAdminRequired;
 use OCP\AppFramework\Http\Attribute\NoCSRFRequired;
+use OCP\AppFramework\Http\Attribute\UserRateLimit;
 use OCP\AppFramework\Http\JSONResponse;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\IRequest;
@@ -45,6 +46,7 @@ class CompletionsController extends AbstractApiController {
 
 	#[NoAdminRequired]
 	#[NoCSRFRequired]
+	#[UserRateLimit(limit: 60, period: 60)]
 	public function create(): JSONResponse|SseResponse {
 		try {
 			$params = $this->request->getParams();

@@ -11,11 +11,14 @@ namespace OCA\OpenAiApi\Service;
 
 use OCA\OpenAiApi\AppInfo\Application;
 use OCA\OpenAiApi\Exception\ApiException;
+use OCP\AppFramework\Http;
 use OCP\AppFramework\Utility\ITimeFactory;
 use OCP\Files\File;
 use OCP\Files\Folder;
 use OCP\Files\IRootFolder;
+use OCP\Files\Node;
 use OCP\Files\NotFoundException;
+use OCP\Security\ISecureRandom;
 use Psr\Log\LoggerInterface;
 
 /**
@@ -27,10 +30,16 @@ use Psr\Log\LoggerInterface;
  * and removed again once the request that needs them is done.
  */
 class FileStagingService {
+	/** Length of the random prefix that marks a file as one this app staged. */
+	private const PREFIX_LENGTH = 16;
+
+	private const PREFIX_PATTERN = '/^[a-z0-9]{' . self::PREFIX_LENGTH . '}-/';
+
 	public function __construct(
 		private IRootFolder $rootFolder,
 		private Config $config,
 		private ITimeFactory $timeFactory,
+		private ISecureRandom $random,
 		private LoggerInterface $logger,
 	) {
 	}
@@ -45,8 +54,12 @@ class FileStagingService {
 			return [];
 		}
 
+		$this->assertWithinSizeLimit($attachments);
+
 		try {
 			$folder = $this->getStagingFolder($userId);
+		} catch (ApiException $e) {
+			throw $e;
 		} catch (\Throwable $e) {
 			throw ApiException::serverError('Could not prepare the attachment staging folder.', $e);
 		}
@@ -54,7 +67,7 @@ class FileStagingService {
 		$fileIds = [];
 		try {
 			foreach ($attachments as $attachment) {
-				$name = uniqid('', true) . '-' . $this->sanitize($attachment->filename);
+				$name = $this->prefix() . '-' . $this->sanitize($attachment->filename);
 				$file = $folder->newFile($name, $attachment->content);
 				$fileIds[] = $file->getId();
 			}
@@ -92,6 +105,7 @@ class FileStagingService {
 	}
 
 	/**
+	 * @throws ApiException if the staging path is taken by something else
 	 * @throws \OCP\Files\NotPermittedException
 	 * @throws \OCP\User\Exceptions\UserNotFoundException
 	 */
@@ -99,11 +113,19 @@ class FileStagingService {
 		$userFolder = $this->rootFolder->getUserFolder($userId);
 		try {
 			$folder = $userFolder->get(Application::STAGING_FOLDER);
-			if (!$folder instanceof Folder) {
-				throw new NotFoundException('Staging path is not a folder');
-			}
 		} catch (NotFoundException) {
 			return $userFolder->newFolder(Application::STAGING_FOLDER);
+		}
+
+		if (!$folder instanceof Folder || !$this->isOwnHomeFolder($folder, $userId)) {
+			throw new ApiException(
+				'The staging path "' . Application::STAGING_FOLDER . '" in your files is not a folder'
+				. ' in your own storage. Attachments cannot be staged until it is moved out of the way.',
+				Http::STATUS_PRECONDITION_FAILED,
+				'invalid_request_error',
+				null,
+				'staging_folder_unusable',
+			);
 		}
 
 		$this->sweep($folder);
@@ -111,17 +133,61 @@ class FileStagingService {
 	}
 
 	/**
+	 * Whether the node lives in the user's own home storage.
+	 *
+	 * A share or a group folder that happens to sit at the staging path would put
+	 * the attachments of a request in reach of whoever else is mounted there, and
+	 * would expose that folder's contents to the sweep.
+	 */
+	private function isOwnHomeFolder(Node $node, string $userId): bool {
+		return $node->getOwner()?->getUID() === $userId
+			&& $node->getMountPoint()->getMountType() === '';
+	}
+
+	/**
+	 * @param list<Attachment> $attachments
+	 * @throws ApiException
+	 */
+	private function assertWithinSizeLimit(array $attachments): void {
+		$limit = $this->config->getMaxAttachmentSize();
+		$total = 0;
+		foreach ($attachments as $attachment) {
+			$size = strlen($attachment->content);
+			$total += $size;
+			if ($size > $limit || $total > $limit) {
+				throw new ApiException(
+					'Attachments must not exceed ' . $limit . ' bytes in total.',
+					Http::STATUS_REQUEST_ENTITY_TOO_LARGE,
+					'invalid_request_error',
+				);
+			}
+		}
+	}
+
+	private function prefix(): string {
+		return $this->random->generate(
+			self::PREFIX_LENGTH,
+			ISecureRandom::CHAR_LOWER . ISecureRandom::CHAR_DIGITS,
+		);
+	}
+
+	/**
 	 * Drop files left behind by requests that died before they could clean up.
 	 *
 	 * Sweeping the requesting user's own folder on every request keeps this
 	 * bounded and self-healing, without a job that would have to walk every
-	 * account on the instance.
+	 * account on the instance. Only files carrying the staging prefix are
+	 * considered, so a folder a user created under this name themselves does not
+	 * lose its contents.
 	 */
 	private function sweep(Folder $folder): void {
 		$expiry = $this->timeFactory->getTime() - $this->config->getStagedFileTtl();
 		try {
 			foreach ($folder->getDirectoryListing() as $node) {
-				if ($node instanceof File && $node->getMTime() < $expiry) {
+				if (!$node instanceof File || $node->getMTime() >= $expiry) {
+					continue;
+				}
+				if (preg_match(self::PREFIX_PATTERN, $node->getName()) === 1) {
 					$node->delete();
 				}
 			}

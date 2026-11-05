@@ -10,6 +10,7 @@ declare(strict_types=1);
 namespace OCA\OpenAiApi\AppInfo;
 
 use OCA\OpenAiApi\ConfigLexicon;
+use OCA\OpenAiApi\Middleware\CsrfMiddleware;
 use OCP\AppFramework\App;
 use OCP\AppFramework\Bootstrap\IBootContext;
 use OCP\AppFramework\Bootstrap\IBootstrap;
@@ -32,6 +33,7 @@ class Application extends App implements IBootstrap {
 	#[\Override]
 	public function register(IRegistrationContext $context): void {
 		$context->registerConfigLexicon(ConfigLexicon::class);
+		$context->registerMiddleware(CsrfMiddleware::class);
 	}
 
 	#[\Override]

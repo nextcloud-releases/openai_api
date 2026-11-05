@@ -28,6 +28,7 @@ class TaskRunner {
 	public function __construct(
 		private IManager $taskProcessingManager,
 		private Config $config,
+		private ConcurrencyLimiter $concurrencyLimiter,
 		private LoggerInterface $logger,
 	) {
 	}
@@ -38,23 +39,30 @@ class TaskRunner {
 	 * @throws ApiException
 	 */
 	public function run(Task $task): Task {
-		if ($this->hasSynchronousProvider($task->getTaskTypeId())) {
-			// A synchronous provider runs inside this request, so there is nothing
-			// to poll for and no dependency on a background worker.
-			try {
-				$finished = $this->taskProcessingManager->runTask($task);
-			} catch (\Throwable $e) {
-				throw $this->mapException($e);
+		// Held across the whole run: the request occupies a worker until the task
+		// reaches a terminal state, whichever branch gets it there.
+		$this->concurrencyLimiter->acquire($task->getUserId());
+		try {
+			if ($this->hasSynchronousProvider($task->getTaskTypeId())) {
+				// A synchronous provider runs inside this request, so there is nothing
+				// to poll for and no dependency on a background worker.
+				try {
+					$finished = $this->taskProcessingManager->runTask($task);
+				} catch (\Throwable $e) {
+					throw $this->mapException($e);
+				}
+				return $this->assertSuccessful($finished);
+			}
+
+			$this->schedule($task);
+			$finished = $task;
+			foreach ($this->poll($task) as $current) {
+				$finished = $current;
 			}
 			return $this->assertSuccessful($finished);
+		} finally {
+			$this->concurrencyLimiter->release();
 		}
-
-		$this->schedule($task);
-		$finished = $task;
-		foreach ($this->poll($task) as $current) {
-			$finished = $current;
-		}
-		return $this->assertSuccessful($finished);
 	}
 
 	/**
@@ -86,29 +94,37 @@ class TaskRunner {
 		$deadline = microtime(true) + (float)$this->config->getRequestTimeout();
 		$interval = $this->config->getPollIntervalMs() * 1000;
 
-		while (true) {
-			try {
-				$current = $this->taskProcessingManager->getTask($taskId);
-			} catch (\Throwable $e) {
-				throw $this->mapException($e);
-			}
+		// The polling loop is what holds the worker open for a streamed request.
+		// Closing the generator early runs the release, so a consumer that stops
+		// iterating does not keep the slot.
+		$this->concurrencyLimiter->acquire($task->getUserId());
+		try {
+			while (true) {
+				try {
+					$current = $this->taskProcessingManager->getTask($taskId);
+				} catch (\Throwable $e) {
+					throw $this->mapException($e);
+				}
 
-			yield $current;
+				yield $current;
 
-			if ($this->isTerminal($current)) {
-				return;
+				if ($this->isTerminal($current)) {
+					return;
+				}
+				if (microtime(true) >= $deadline) {
+					$this->cancel($taskId);
+					throw new ApiException(
+						'The task did not finish within ' . $this->config->getRequestTimeout() . ' seconds.',
+						Http::STATUS_GATEWAY_TIMEOUT,
+						'server_error',
+						null,
+						'timeout',
+					);
+				}
+				usleep($interval);
 			}
-			if (microtime(true) >= $deadline) {
-				$this->cancel($taskId);
-				throw new ApiException(
-					'The task did not finish within ' . $this->config->getRequestTimeout() . ' seconds.',
-					Http::STATUS_GATEWAY_TIMEOUT,
-					'server_error',
-					null,
-					'timeout',
-				);
-			}
-			usleep($interval);
+		} finally {
+			$this->concurrencyLimiter->release();
 		}
 	}
 
@@ -157,14 +173,30 @@ class TaskRunner {
 				null,
 				'task_cancelled',
 			),
-			default => throw new ApiException(
-				$task->getUserFacingErrorMessage() ?? $task->getErrorMessage() ?? 'The task failed.',
-				Http::STATUS_INTERNAL_SERVER_ERROR,
-				'server_error',
-				null,
-				'task_failed',
-			),
+			default => throw $this->taskFailed($task),
 		};
+	}
+
+	/**
+	 * The error of a failed task, without the provider's own message.
+	 *
+	 * Only `userFacingErrorMessage` is meant to be shown to the requesting user.
+	 * The raw error message carries whatever the provider threw - upstream URLs,
+	 * internal host names, raw upstream responses - and is logged rather than
+	 * returned.
+	 */
+	private function taskFailed(Task $task): ApiException {
+		$errorMessage = $task->getErrorMessage();
+		if ($errorMessage !== null) {
+			$this->logger->error('Task ' . ($task->getId() ?? 0) . ' failed: ' . $errorMessage);
+		}
+		return new ApiException(
+			$task->getUserFacingErrorMessage() ?? 'The task failed.',
+			Http::STATUS_INTERNAL_SERVER_ERROR,
+			'server_error',
+			null,
+			'task_failed',
+		);
 	}
 
 	private function mapException(\Throwable $e): ApiException {
